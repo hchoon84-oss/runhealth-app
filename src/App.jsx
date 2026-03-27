@@ -1,4 +1,3 @@
-
 import { useState, useEffect, useRef, useCallback } from "react";
 
 const RUN_KEY = "rh-running-records";
@@ -19,6 +18,17 @@ function loadLeaflet() {
     script.onload = () => resolve(window.L);
     document.head.appendChild(script);
   });
+}
+
+// km 알림 음성 함수
+function announceKm(km) {
+  if (!window.speechSynthesis) return;
+  const msg = new SpeechSynthesisUtterance(`굿보이 ${km}키로 통과`);
+  msg.lang = "ko-KR";
+  msg.rate = 0.9;
+  msg.volume = 1;
+  window.speechSynthesis.cancel();
+  window.speechSynthesis.speak(msg);
 }
 
 function formatTime(s) {
@@ -68,38 +78,38 @@ function Sparkline({data,color,width=130,height=40}) {
 }
 
 function RunMap({route,center,height=260,zoom=15}) {
-  const mapRef=useRef(null), instanceRef=useRef(null), polyRef=useRef(null), markerRef=useRef(null);
+  const mapRef=useRef(null),instanceRef=useRef(null),polyRef=useRef(null),markerRef=useRef(null);
   useEffect(()=>{
     let mounted=true;
     loadLeaflet().then((L)=>{
       if (!mounted||!mapRef.current) return;
-      if (instanceRef.current) { instanceRef.current.remove(); instanceRef.current=null; }
+      if (instanceRef.current){instanceRef.current.remove();instanceRef.current=null;}
       const initCenter=center||(route&&route.length>0?route[0]:[37.5665,126.9780]);
       const map=L.map(mapRef.current,{zoomControl:true,attributionControl:false}).setView(initCenter,zoom);
       instanceRef.current=map;
       L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19}).addTo(map);
-      if (route&&route.length>1) {
+      if (route&&route.length>1){
         const poly=L.polyline(route,{color:"#ff5000",weight:5,opacity:0.9}).addTo(map);
         polyRef.current=poly;
         map.fitBounds(poly.getBounds(),{padding:[24,24]});
         L.marker(route[0],{icon:L.divIcon({html:`<div style="background:#00c896;width:14px;height:14px;border-radius:50%;border:3px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.5)"></div>`,className:"",iconSize:[14,14],iconAnchor:[7,7]})}).addTo(map).bindPopup("출발");
         L.marker(route[route.length-1],{icon:L.divIcon({html:`<div style="background:#ff5000;width:14px;height:14px;border-radius:50%;border:3px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.5)"></div>`,className:"",iconSize:[14,14],iconAnchor:[7,7]})}).addTo(map).bindPopup("도착");
-      } else if (center) {
+      } else if (center){
         markerRef.current=L.marker(center,{icon:L.divIcon({html:`<div style="background:#4da6ff;width:16px;height:16px;border-radius:50%;border:3px solid #fff;box-shadow:0 0 0 4px rgba(77,166,255,0.3)"></div>`,className:"",iconSize:[16,16],iconAnchor:[8,8]})}).addTo(map).bindPopup("현재 위치");
       }
     });
-    return ()=>{ mounted=false; if(instanceRef.current){instanceRef.current.remove();instanceRef.current=null;} };
+    return()=>{mounted=false;if(instanceRef.current){instanceRef.current.remove();instanceRef.current=null;}};
   },[]);
   useEffect(()=>{
-    if (!instanceRef.current||!center||(route&&route.length>1)) return;
-    loadLeaflet().then(()=>{ if(markerRef.current){markerRef.current.setLatLng(center);instanceRef.current.setView(center);} });
+    if(!instanceRef.current||!center||(route&&route.length>1)) return;
+    loadLeaflet().then(()=>{if(markerRef.current){markerRef.current.setLatLng(center);instanceRef.current.setView(center);}});
   },[center]);
   useEffect(()=>{
-    if (!instanceRef.current||!route||route.length<2) return;
+    if(!instanceRef.current||!route||route.length<2) return;
     loadLeaflet().then((L)=>{
-      if (!instanceRef.current) return;
-      if (polyRef.current) polyRef.current.setLatLngs(route);
-      else { polyRef.current=L.polyline(route,{color:"#ff5000",weight:5,opacity:0.9}).addTo(instanceRef.current); }
+      if(!instanceRef.current) return;
+      if(polyRef.current) polyRef.current.setLatLngs(route);
+      else{polyRef.current=L.polyline(route,{color:"#ff5000",weight:5,opacity:0.9}).addTo(instanceRef.current);}
       instanceRef.current.setView(route[route.length-1]);
     });
   },[route]);
@@ -114,7 +124,9 @@ export default function App() {
   const [view,setView]=useState("list");
   const [selected,setSelected]=useState(null);
   const [toast,setToast]=useState(null);
-  const timerRef=useRef(null), watchRef=useRef(null);
+  const timerRef=useRef(null),watchRef=useRef(null);
+  const lastAnnouncedKmRef=useRef(0);
+
   const [gpsActive,setGpsActive]=useState(false);
   const [gpsError,setGpsError]=useState(null);
   const [currentPos,setCurrentPos]=useState(null);
@@ -144,13 +156,25 @@ export default function App() {
   const startGPS=useCallback(()=>{
     if(!navigator.geolocation){setGpsError("GPS를 지원하지 않습니다.");return;}
     setGpsError(null);setGpsActive(true);
+    lastAnnouncedKmRef.current=0;
     watchRef.current=navigator.geolocation.watchPosition(
       (pos)=>{
         const pt=[pos.coords.latitude,pos.coords.longitude];
         setCurrentPos(pt);
         setRoute(prev=>{
           const next=[...prev,pt];
-          if(next.length>=2){const added=haversineKm(next[next.length-2],pt);setGpsDistance(d=>d+added);}
+          if(next.length>=2){
+            const added=haversineKm(next[next.length-2],pt);
+            setGpsDistance(d=>{
+              const newD=d+added;
+              const crossed=Math.floor(newD);
+              if(crossed>0&&crossed>lastAnnouncedKmRef.current){
+                lastAnnouncedKmRef.current=crossed;
+                announceKm(crossed);
+              }
+              return newD;
+            });
+          }
           return next;
         });
       },
@@ -166,6 +190,7 @@ export default function App() {
 
   const resetGPS=useCallback(()=>{
     stopGPS();setRoute([]);setCurrentPos(null);setGpsDistance(0);setGpsError(null);
+    lastAnnouncedKmRef.current=0;
   },[stopGPS]);
 
   useEffect(()=>{
@@ -220,7 +245,6 @@ export default function App() {
   const LBL={fontSize:14,color:"#777",letterSpacing:"0.06em",display:"block",marginBottom:6,fontWeight:600};
   const SEC={fontSize:14,color:"#666",letterSpacing:"0.12em",fontWeight:700,marginBottom:12};
   const BACK={background:"transparent",border:"none",color:"#777",cursor:"pointer",fontSize:16,fontFamily:"inherit",padding:0,marginBottom:24};
-
   return (
     <div style={{minHeight:"100vh",background:C.bg,fontFamily:"'Courier New',monospace",color:"#e8e8e0"}}>
       <div style={{position:"fixed",inset:0,zIndex:0,backgroundImage:"linear-gradient(rgba(255,80,0,0.03) 1px,transparent 1px),linear-gradient(90deg,rgba(255,80,0,0.03) 1px,transparent 1px)",backgroundSize:"40px 40px",pointerEvents:"none"}}/>
@@ -293,12 +317,13 @@ export default function App() {
                   <div style={{fontSize:13,color:"#777",marginBottom:2}}>GPS 트래킹</div>
                   <div style={{display:"flex",alignItems:"center",gap:8}}>
                     <div style={{width:8,height:8,borderRadius:"50%",background:gpsActive?"#00c896":"#333",boxShadow:gpsActive?"0 0 0 3px rgba(0,200,150,0.25)":"none"}}/>
-                    <span style={{fontSize:13,color:gpsActive?"#00c896":"#555"}}>{gpsActive?"추적 중":"대기"}</span>
+                    <span style={{fontSize:13,color:gpsActive?"#00c896":"#555"}}>{gpsActive?"추적 중 🔊":"대기"}</span>
                     {gpsDistance>0&&<span style={{fontSize:14,color:C.run,fontWeight:700,marginLeft:8}}>📍 {gpsDistance.toFixed(2)}km</span>}
                   </div>
                 </div>
                 {!timer.running?<button onClick={startRun} style={{background:"#00c896",border:"none",color:"#fff",padding:"10px 18px",borderRadius:3,cursor:"pointer",fontSize:14,fontFamily:"inherit",fontWeight:700}}>▶ GPS 시작</button>:<button onClick={toggleTimer} style={{background:"#ff5000",border:"none",color:"#fff",padding:"10px 18px",borderRadius:3,cursor:"pointer",fontSize:14,fontFamily:"inherit",fontWeight:700}}>■ 종료</button>}
               </div>
+              {gpsActive&&<div style={{padding:"8px 14px",background:"rgba(0,200,150,0.06)",fontSize:12,color:"#00c896"}}>🔊 1km마다 음성 알림 켜짐</div>}
               {gpsError&&<div style={{padding:"10px 14px",background:"rgba(255,50,50,0.08)",fontSize:13,color:"#ff6060"}}>{gpsError}</div>}
               <RunMap route={route.length>1?route:null} center={currentPos} height={220}/>
             </div>
@@ -404,49 +429,43 @@ export default function App() {
             {subTab==="run"&&(<>
               <div style={{fontSize:14,color:"#555",marginBottom:14}}>총 {runs.length}회</div>
               {runs.length===0&&<div style={{textAlign:"center",padding:"48px 0",color:"#2a2a38",fontSize:16}}>런닝 기록 없음</div>}
-              {runs.map((r,i)=>(
-                <div key={r.id} onClick={()=>{setSelected(r);setView("detailRun");}} style={{display:"flex",alignItems:"center",gap:14,padding:"18px 0",borderBottom:`1px solid #12121c`,cursor:"pointer"}}>
-                  <div style={{fontSize:14,color:"#333",minWidth:26,fontWeight:700}}>{String(i+1).padStart(2,"0")}</div>
-                  <div style={{flex:1}}>
-                    <div style={{fontSize:14,color:"#666",marginBottom:4}}>{formatDate(r.date)} {r.route?"📍":""}</div>
-                    <div style={{fontSize:24,fontWeight:800,color:C.run}}>{r.distance}<span style={{fontSize:14,color:"#666",fontWeight:400}}> km</span></div>
-                  </div>
-                  <div style={{textAlign:"right"}}>
-                    <div style={{fontSize:16,fontWeight:700}}>{formatPace(r.distance,r.duration)}</div>
-                    <div style={{fontSize:14,color:"#555",marginTop:3}}>{formatTime(r.duration)}</div>
-                    <div style={{fontSize:20,marginTop:2}}>{feelings[r.feeling]}</div>
-                  </div>
+              {runs.map((r,i)=>(<div key={r.id} onClick={()=>{setSelected(r);setView("detailRun");}} style={{display:"flex",alignItems:"center",gap:14,padding:"18px 0",borderBottom:`1px solid #12121c`,cursor:"pointer"}}>
+                <div style={{fontSize:14,color:"#333",minWidth:26,fontWeight:700}}>{String(i+1).padStart(2,"0")}</div>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:14,color:"#666",marginBottom:4}}>{formatDate(r.date)} {r.route?"📍":""}</div>
+                  <div style={{fontSize:24,fontWeight:800,color:C.run}}>{r.distance}<span style={{fontSize:14,color:"#666",fontWeight:400}}> km</span></div>
                 </div>
-              ))}
+                <div style={{textAlign:"right"}}>
+                  <div style={{fontSize:16,fontWeight:700}}>{formatPace(r.distance,r.duration)}</div>
+                  <div style={{fontSize:14,color:"#555",marginTop:3}}>{formatTime(r.duration)}</div>
+                  <div style={{fontSize:20,marginTop:2}}>{feelings[r.feeling]}</div>
+                </div>
+              </div>))}
             </>)}
             {subTab==="bp"&&(<>
               <div style={{fontSize:14,color:"#555",marginBottom:14}}>혈압 기록 {healths.filter(h=>h.sys).length}회</div>
               {healths.filter(h=>h.sys).length===0&&<div style={{textAlign:"center",padding:"48px 0",color:"#2a2a38",fontSize:16}}>혈압 기록 없음</div>}
-              {healths.filter(h=>h.sys).map(h=>{const st=bpStatus(h.sys,h.dia);return(
-                <div key={h.id} onClick={()=>{setSelected(h);setView("detailHealth");}} style={{display:"flex",alignItems:"center",gap:14,padding:"18px 0",borderBottom:`1px solid #12121c`,cursor:"pointer"}}>
-                  <div style={{flex:1}}>
-                    <div style={{fontSize:14,color:"#666",marginBottom:4}}>{formatDate(h.date)}</div>
-                    <div style={{fontSize:28,fontWeight:800,color:C.bp}}>{h.sys}<span style={{fontSize:20,color:"#666"}}>/{h.dia}</span></div>
-                  </div>
-                  <div style={{textAlign:"right"}}>
-                    <div style={{fontSize:15,color:st.color,fontWeight:700,marginBottom:4}}>{st.label}</div>
-                    {h.pulse&&<div style={{fontSize:14,color:"#666"}}>♥ {h.pulse} bpm</div>}
-                  </div>
+              {healths.filter(h=>h.sys).map(h=>{const st=bpStatus(h.sys,h.dia);return(<div key={h.id} onClick={()=>{setSelected(h);setView("detailHealth");}} style={{display:"flex",alignItems:"center",gap:14,padding:"18px 0",borderBottom:`1px solid #12121c`,cursor:"pointer"}}>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:14,color:"#666",marginBottom:4}}>{formatDate(h.date)}</div>
+                  <div style={{fontSize:28,fontWeight:800,color:C.bp}}>{h.sys}<span style={{fontSize:20,color:"#666"}}>/{h.dia}</span></div>
                 </div>
-              );})}
+                <div style={{textAlign:"right"}}>
+                  <div style={{fontSize:15,color:st.color,fontWeight:700,marginBottom:4}}>{st.label}</div>
+                  {h.pulse&&<div style={{fontSize:14,color:"#666"}}>♥ {h.pulse} bpm</div>}
+                </div>
+              </div>);})}
             </>)}
             {subTab==="weight"&&(<>
               <div style={{fontSize:14,color:"#555",marginBottom:14}}>체중 기록 {healths.filter(h=>h.weight).length}회</div>
               {healths.filter(h=>h.weight).length===0&&<div style={{textAlign:"center",padding:"48px 0",color:"#2a2a38",fontSize:16}}>체중 기록 없음</div>}
-              {healths.filter(h=>h.weight).map((h,i,arr)=>{const prev=arr[i+1]?.weight;const diff=prev!=null?(h.weight-prev).toFixed(1):null;return(
-                <div key={h.id} onClick={()=>{setSelected(h);setView("detailHealth");}} style={{display:"flex",alignItems:"center",gap:14,padding:"18px 0",borderBottom:`1px solid #12121c`,cursor:"pointer"}}>
-                  <div style={{flex:1}}>
-                    <div style={{fontSize:14,color:"#666",marginBottom:4}}>{formatDate(h.date)}</div>
-                    <div style={{fontSize:30,fontWeight:900,color:C.weight}}>{h.weight}<span style={{fontSize:16,color:"#666",fontWeight:400}}> kg</span></div>
-                  </div>
-                  {diff!==null&&<div style={{fontSize:18,fontWeight:700,color:parseFloat(diff)>0?"#ff5060":parseFloat(diff)<0?"#00c896":"#555"}}>{parseFloat(diff)>0?"▲":parseFloat(diff)<0?"▼":"—"} {Math.abs(diff)}</div>}
+              {healths.filter(h=>h.weight).map((h,i,arr)=>{const prev=arr[i+1]?.weight;const diff=prev!=null?(h.weight-prev).toFixed(1):null;return(<div key={h.id} onClick={()=>{setSelected(h);setView("detailHealth");}} style={{display:"flex",alignItems:"center",gap:14,padding:"18px 0",borderBottom:`1px solid #12121c`,cursor:"pointer"}}>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:14,color:"#666",marginBottom:4}}>{formatDate(h.date)}</div>
+                  <div style={{fontSize:30,fontWeight:900,color:C.weight}}>{h.weight}<span style={{fontSize:16,color:"#666",fontWeight:400}}> kg</span></div>
                 </div>
-              );})}
+                {diff!==null&&<div style={{fontSize:18,fontWeight:700,color:parseFloat(diff)>0?"#ff5060":parseFloat(diff)<0?"#00c896":"#555"}}>{parseFloat(diff)>0?"▲":parseFloat(diff)<0?"▼":"—"} {Math.abs(diff)}</div>}
+              </div>);})}
             </>)}
           </div>
         )}
@@ -483,29 +502,23 @@ export default function App() {
 
         {view==="detailHealth"&&selected&&(()=>{
           const st=selected.sys?bpStatus(selected.sys,selected.dia):{label:"—",color:"#555"};
-          return(
-            <div style={{padding:"24px"}}>
-              <button onClick={()=>{setView("list");setTab("logs");setSubTab(selected.sys?"bp":"weight");}} style={BACK}>← 뒤로</button>
-              <div style={{fontSize:15,color:"#666",marginBottom:20}}>{formatDate(selected.date)}</div>
-              {selected.sys&&(
-                <div style={{border:`1px solid rgba(77,166,255,0.2)`,borderRadius:4,padding:"20px",marginBottom:18}}>
-                  <div style={{fontSize:15,color:C.bp,marginBottom:14,fontWeight:700}}>혈압</div>
-                  <div style={{fontSize:56,fontWeight:900,color:C.bp,lineHeight:1}}>{selected.sys}<span style={{fontSize:30,color:"#555"}}>/{selected.dia}</span></div>
-                  <div style={{fontSize:15,color:"#555",marginTop:6}}>mmHg</div>
-                  <div style={{marginTop:14,padding:"12px 16px",background:"rgba(0,0,0,0.3)",borderLeft:`4px solid ${st.color}`,fontSize:17,color:st.color,fontWeight:700}}>{st.label}</div>
-                  {selected.pulse&&<div style={{fontSize:17,color:"#777",marginTop:14}}>♥ {selected.pulse} bpm</div>}
-                </div>
-              )}
-              {selected.weight&&(
-                <div style={{border:`1px solid rgba(167,139,250,0.2)`,borderRadius:4,padding:"20px",marginBottom:18}}>
-                  <div style={{fontSize:15,color:C.weight,marginBottom:14,fontWeight:700}}>체중</div>
-                  <div style={{fontSize:56,fontWeight:900,color:C.weight,lineHeight:1}}>{selected.weight}<span style={{fontSize:22,color:"#555"}}> kg</span></div>
-                </div>
-              )}
-              {selected.memo&&<div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:4,padding:"16px",fontSize:16,color:"#999",marginBottom:28}}>{selected.memo}</div>}
-              <button onClick={()=>deleteHealth(selected.id)} style={{width:"100%",background:"transparent",border:"1px solid #2a1010",color:"#664444",padding:"16px",fontSize:15,borderRadius:4,cursor:"pointer",fontFamily:"inherit"}}>삭제하기</button>
-            </div>
-          );
+          return(<div style={{padding:"24px"}}>
+            <button onClick={()=>{setView("list");setTab("logs");setSubTab(selected.sys?"bp":"weight");}} style={BACK}>← 뒤로</button>
+            <div style={{fontSize:15,color:"#666",marginBottom:20}}>{formatDate(selected.date)}</div>
+            {selected.sys&&(<div style={{border:`1px solid rgba(77,166,255,0.2)`,borderRadius:4,padding:"20px",marginBottom:18}}>
+              <div style={{fontSize:15,color:C.bp,marginBottom:14,fontWeight:700}}>혈압</div>
+              <div style={{fontSize:56,fontWeight:900,color:C.bp,lineHeight:1}}>{selected.sys}<span style={{fontSize:30,color:"#555"}}>/{selected.dia}</span></div>
+              <div style={{fontSize:15,color:"#555",marginTop:6}}>mmHg</div>
+              <div style={{marginTop:14,padding:"12px 16px",background:"rgba(0,0,0,0.3)",borderLeft:`4px solid ${st.color}`,fontSize:17,color:st.color,fontWeight:700}}>{st.label}</div>
+              {selected.pulse&&<div style={{fontSize:17,color:"#777",marginTop:14}}>♥ {selected.pulse} bpm</div>}
+            </div>)}
+            {selected.weight&&(<div style={{border:`1px solid rgba(167,139,250,0.2)`,borderRadius:4,padding:"20px",marginBottom:18}}>
+              <div style={{fontSize:15,color:C.weight,marginBottom:14,fontWeight:700}}>체중</div>
+              <div style={{fontSize:56,fontWeight:900,color:C.weight,lineHeight:1}}>{selected.weight}<span style={{fontSize:22,color:"#555"}}> kg</span></div>
+            </div>)}
+            {selected.memo&&<div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:4,padding:"16px",fontSize:16,color:"#999",marginBottom:28}}>{selected.memo}</div>}
+            <button onClick={()=>deleteHealth(selected.id)} style={{width:"100%",background:"transparent",border:"1px solid #2a1010",color:"#664444",padding:"16px",fontSize:15,borderRadius:4,cursor:"pointer",fontFamily:"inherit"}}>삭제하기</button>
+          </div>);
         })()}
       </div>
 
